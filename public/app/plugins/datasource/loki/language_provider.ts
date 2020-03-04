@@ -69,7 +69,8 @@ export default class LokiLanguageProvider extends LanguageProvider {
    *  not account for different size of a response. If that is needed a `length` function can be added in the options.
    *  10 as a max size is totally arbitrary right now.
    */
-  private labelsCache = new LRU<string, Record<string, string[]>>(10);
+  private seriesCache = new LRU<string, Record<string, string[]>>(10);
+  private labelsCache = new LRU<string, string[]>(10);
 
   constructor(datasource: LokiDatasource, initialValues?: any) {
     super();
@@ -411,14 +412,14 @@ export default class LokiLanguageProvider extends LanguageProvider {
 
     const cacheKey = this.generateCacheKey(url, start, end, match);
     const params = { match, start, end };
-    let value = this.labelsCache.get(cacheKey);
+    let value = this.seriesCache.get(cacheKey);
     if (!value) {
       // Clear value when requesting new one. Empty object being truthy also makes sure we don't request twice.
-      this.labelsCache.set(cacheKey, {});
+      this.seriesCache.set(cacheKey, {});
       const data = await this.request(url, params);
       const { values } = processLabels(data);
       value = values;
-      this.labelsCache.set(cacheKey, value);
+      this.seriesCache.set(cacheKey, value);
     }
     return value;
   };
@@ -443,24 +444,35 @@ export default class LokiLanguageProvider extends LanguageProvider {
   async fetchLabelValues(key: string, absoluteRange: AbsoluteTimeRange): Promise<string[]> {
     const url = `/api/prom/label/${key}/values`;
     let values: string[] = [];
-    try {
-      const rangeParams = absoluteRange ? rangeToParams(absoluteRange) : {};
-      const res = await this.request(url, rangeParams);
-      values = res.slice().sort();
+    const rangeParams: { start?: number; end?: number } = absoluteRange ? rangeToParams(absoluteRange) : {};
+    const { start, end } = rangeParams;
 
-      // Add to label options
-      this.logLabelOptions = this.logLabelOptions.map(keyOption => {
-        if (keyOption.value === key) {
-          return {
-            ...keyOption,
-            children: values.map(value => ({ label: value, value })),
-          };
-        }
-        return keyOption;
-      });
-    } catch (e) {
-      console.error(e);
+    const cacheKey = this.generateCacheKey(url, start, end, key);
+    const params = { start, end };
+    let value = this.labelsCache.get(cacheKey);
+    if (!value) {
+      try {
+        // Clear value when requesting new one. Empty object being truthy also makes sure we don't request twice.
+        this.labelsCache.set(cacheKey, []);
+        const res = await this.request(url, params);
+        values = res.slice().sort();
+        value = values;
+        this.labelsCache.set(cacheKey, value);
+
+        // Add to label options
+        this.logLabelOptions = this.logLabelOptions.map(keyOption => {
+          if (keyOption.value === key) {
+            return {
+              ...keyOption,
+              children: values.map(value => ({ label: value, value })),
+            };
+          }
+          return keyOption;
+        });
+      } catch (e) {
+        console.error(e);
+      }
     }
-    return values;
+    return value;
   }
 }
